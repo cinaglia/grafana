@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/url"
 	"time"
 
 	"github.com/grafana/grafana/pkg/api/dtos"
@@ -34,7 +35,6 @@ type CreateExternalSnapshotResponse struct {
 
 func createExternalDashboardSnapshot(cmd m.CreateDashboardSnapshotCommand) (*CreateExternalSnapshotResponse, error) {
 	var createSnapshotResponse CreateExternalSnapshotResponse
-	url := setting.ExternalSnapshotUrl + "/api/snapshots"
 	message := map[string]interface{}{
 		"name":      cmd.Name,
 		"expires":   cmd.Expires,
@@ -46,7 +46,7 @@ func createExternalDashboardSnapshot(cmd m.CreateDashboardSnapshotCommand) (*Cre
 		return nil, err
 	}
 
-	response, err := http.Post(url, "application/json", bytes.NewBuffer(messageBytes))
+	response, err := http.Post(setting.ExternalSnapshotUrl+"/api/snapshots", "application/json", bytes.NewBuffer(messageBytes))
 	if response != nil {
 		defer response.Body.Close()
 	}
@@ -150,8 +150,17 @@ func GetDashboardSnapshot(c *m.ReqContext) {
 	c.JSON(200, dto)
 }
 
-func deleteExternalDashboardSnapshot(deleteKey string) error {
-	response, err := http.Get(setting.ExternalSnapshotUrl + "/api/snapshots-delete/" + deleteKey)
+func deleteExternalDashboardSnapshot(deleteKey string, externalUrl string) error {
+	url, err := url.Parse(externalUrl)
+	if err != nil {
+		return fmt.Errorf("Invalid external snapshot url %s", externalUrl)
+	}
+
+	url.RawQuery = ""
+	url.Fragment = ""
+	url.Path = "/api/snapshots-delete/" + deleteKey
+
+	response, err := http.Get(url.String())
 	acceptedStatusCodes := map[int]bool{
 		200: true,
 		404: true,
@@ -186,7 +195,7 @@ func DeleteDashboardSnapshotByDeleteKey(c *m.ReqContext) Response {
 	}
 
 	if query.Result.External {
-		err := deleteExternalDashboardSnapshot(query.Result.DeleteKey)
+		err := deleteExternalDashboardSnapshot(query.Result.DeleteKey, query.Result.ExternalUrl)
 		if err != nil {
 			return Error(500, "Failed to delete external dashboard", err)
 		}
@@ -229,7 +238,7 @@ func DeleteDashboardSnapshot(c *m.ReqContext) Response {
 	}
 
 	if query.Result.External {
-		err := deleteExternalDashboardSnapshot(query.Result.DeleteKey)
+		err := deleteExternalDashboardSnapshot(query.Result.DeleteKey, query.Result.ExternalUrl)
 		if err != nil {
 			return Error(500, "Failed to delete external dashboard", err)
 		}
