@@ -48,7 +48,9 @@ type CreateDashboardSnapshotCommand struct {
 	Expires   int64            `json:"expires"`
 
 	// these are passed when storing an external snapshot ref
-	External  bool   `json:"external"`
+	External    bool   `json:"external"`
+	ExternalUrl string `json:"-"`
+
 	Key       string `json:"key"`
 	DeleteKey string `json:"deleteKey"`
 

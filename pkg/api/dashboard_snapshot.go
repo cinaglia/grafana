@@ -1,10 +1,15 @@
 package api
 
 import (
+	"bytes"
+	"encoding/json"
+	"fmt"
+	"net/http"
 	"time"
 
 	"github.com/grafana/grafana/pkg/api/dtos"
 	"github.com/grafana/grafana/pkg/bus"
+	"github.com/grafana/grafana/pkg/components/simplejson"
 	"github.com/grafana/grafana/pkg/metrics"
 	m "github.com/grafana/grafana/pkg/models"
 	"github.com/grafana/grafana/pkg/services/guardian"
@@ -20,26 +25,80 @@ func GetSharingOptions(c *m.ReqContext) {
 	})
 }
 
+type CreateExternalSnapshotResponse struct {
+	Key       string
+	DeleteKey string
+	Url       string
+	DeleteUrl string
+}
+
+func createExternalDashboardSnapshot(cmd m.CreateDashboardSnapshotCommand) (*CreateExternalSnapshotResponse, error) {
+	var createSnapshotResponse CreateExternalSnapshotResponse
+	url := setting.ExternalSnapshotUrl + "/api/snapshots"
+	message := map[string]interface{}{
+		"name":      cmd.Name,
+		"expires":   cmd.Expires,
+		"dashboard": cmd.Dashboard,
+	}
+
+	messageBytes, err := simplejson.NewFromAny(message).Encode()
+	if err != nil {
+		return nil, err
+	}
+
+	response, err := http.Post(url, "application/json", bytes.NewBuffer(messageBytes))
+	if response != nil {
+		defer response.Body.Close()
+	}
+
+	if err != nil {
+		return nil, err
+	}
+
+	if response.StatusCode != 200 {
+		return nil, fmt.Errorf("Create external snapshot response status code %d", response.StatusCode)
+	}
+
+	if err := json.NewDecoder(response.Body).Decode(&createSnapshotResponse); err != nil {
+		return nil, err
+	}
+
+	return &createSnapshotResponse, nil
+}
+
+// POST /api/snapshots
 func CreateDashboardSnapshot(c *m.ReqContext, cmd m.CreateDashboardSnapshotCommand) {
 	if cmd.Name == "" {
 		cmd.Name = "Unnamed snapshot"
 	}
 
+	url := setting.ToAbsUrl("dashboard/snapshot/" + cmd.Key)
+	cmd.ExternalUrl = ""
+	cmd.OrgId = c.OrgId
+	cmd.UserId = c.UserId
+
 	if cmd.External {
-		// external snapshot ref requires key and delete key
-		if cmd.Key == "" || cmd.DeleteKey == "" {
-			c.JsonApiErr(400, "Missing key and delete key for external snapshot", nil)
+		if !setting.ExternalEnabled {
+			c.JsonApiErr(403, "External dashboard creation is disabled", nil)
 			return
 		}
 
-		cmd.OrgId = -1
-		cmd.UserId = -1
+		response, err := createExternalDashboardSnapshot(cmd)
+		if err != nil {
+			c.JsonApiErr(500, "Failed to create external snaphost", err)
+		}
+
+		url = response.Url
+		cmd.Key = response.Key
+		cmd.DeleteKey = response.DeleteKey
+		cmd.ExternalUrl = response.Url
+		cmd.Dashboard = simplejson.New()
+
 		metrics.M_Api_Dashboard_Snapshot_External.Inc()
 	} else {
 		cmd.Key = util.GetRandomString(32)
 		cmd.DeleteKey = util.GetRandomString(32)
-		cmd.OrgId = c.OrgId
-		cmd.UserId = c.UserId
+
 		metrics.M_Api_Dashboard_Snapshot_Create.Inc()
 	}
 
@@ -51,8 +110,8 @@ func CreateDashboardSnapshot(c *m.ReqContext, cmd m.CreateDashboardSnapshotComma
 	c.JSON(200, util.DynMap{
 		"key":       cmd.Key,
 		"deleteKey": cmd.DeleteKey,
-		"url":       setting.ToAbsUrl("dashboard/snapshot/" + cmd.Key),
-		"deleteUrl": setting.ToAbsUrl("api/snapshots-delete/" + cmd.DeleteKey),
+		"url":       url,
+		"deleteUrl": setting.ToAbsUrl("api/snapshots/" + cmd.Key),
 	})
 }
 
@@ -91,6 +150,26 @@ func GetDashboardSnapshot(c *m.ReqContext) {
 	c.JSON(200, dto)
 }
 
+func deleteExternalDashboardSnapshot(deleteKey string) error {
+	response, err := http.Get(setting.ExternalSnapshotUrl + "/api/snapshots-delete/" + deleteKey)
+	acceptedStatusCodes := map[int]bool{
+		200: true,
+		404: true,
+	}
+
+	if response != nil {
+		defer response.Body.Close()
+	}
+
+	if err != nil {
+		return err
+	} else if _, ok := acceptedStatusCodes[response.StatusCode]; !ok {
+		return fmt.Errorf("External snapshot response status code %d", response.StatusCode)
+	}
+
+	return nil
+}
+
 // GET /api/snapshots-delete/:deleteKey
 func DeleteDashboardSnapshotByDeleteKey(c *m.ReqContext) Response {
 	key := c.Params(":deleteKey")
@@ -100,6 +179,17 @@ func DeleteDashboardSnapshotByDeleteKey(c *m.ReqContext) Response {
 	err := bus.Dispatch(query)
 	if err != nil {
 		return Error(500, "Failed to get dashboard snapshot", err)
+	}
+
+	if query.Result == nil {
+		return Error(404, "Dashboard snapshot not found", nil)
+	}
+
+	if query.Result.External {
+		err := deleteExternalDashboardSnapshot(query.Result.DeleteKey)
+		if err != nil {
+			return Error(500, "Failed to delete external dashboard", err)
+		}
 	}
 
 	cmd := &m.DeleteDashboardSnapshotCommand{DeleteKey: query.Result.DeleteKey}
@@ -136,6 +226,13 @@ func DeleteDashboardSnapshot(c *m.ReqContext) Response {
 
 	if !canEdit && query.Result.UserId != c.SignedInUser.UserId {
 		return Error(403, "Access denied to this snapshot", nil)
+	}
+
+	if query.Result.External {
+		err := deleteExternalDashboardSnapshot(query.Result.DeleteKey)
+		if err != nil {
+			return Error(500, "Failed to delete external dashboard", err)
+		}
 	}
 
 	cmd := &m.DeleteDashboardSnapshotCommand{DeleteKey: query.Result.DeleteKey}

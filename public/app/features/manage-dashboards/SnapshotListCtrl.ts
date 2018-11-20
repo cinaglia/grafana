@@ -8,7 +8,10 @@ export class SnapshotListCtrl {
   constructor(private $rootScope, private backendSrv, navModelSrv) {
     this.navModel = navModelSrv.getNav('dashboards', 'snapshots', 0);
     this.backendSrv.get('/api/dashboard/snapshots').then(result => {
-      this.snapshots = result;
+      this.snapshots = result.map(snapshot => ({
+        ...snapshot,
+        url: snapshot.externalUrl || `/dashboard/snapshot/${snapshot.key}`,
+      }));
     });
   }
 
