@@ -29,18 +29,22 @@ import (
 
 // MysqlStore represents a mysql session store implementation.
 type MysqlStore struct {
-	c    *sql.DB
-	sid  string
-	lock sync.RWMutex
-	data map[interface{}]interface{}
+	c     *sql.DB
+	sid   string
+	lock  sync.RWMutex
+	data  map[interface{}]interface{}
+	age   int64
+	dirty bool
 }
 
 // NewMysqlStore creates and returns a mysql session store.
-func NewMysqlStore(c *sql.DB, sid string, kv map[interface{}]interface{}) *MysqlStore {
+func NewMysqlStore(c *sql.DB, sid string, kv map[interface{}]interface{}, age int64, dirty bool) *MysqlStore {
 	return &MysqlStore{
-		c:    c,
-		sid:  sid,
-		data: kv,
+		c:     c,
+		sid:   sid,
+		data:  kv,
+		age:   age,
+		dirty: dirty,
 	}
 }
 
@@ -49,6 +53,7 @@ func (s *MysqlStore) Set(key, val interface{}) error {
 	s.lock.Lock()
 	defer s.lock.Unlock()
 
+	s.dirty = true
 	s.data[key] = val
 	return nil
 }
@@ -66,6 +71,7 @@ func (s *MysqlStore) Delete(key interface{}) error {
 	s.lock.Lock()
 	defer s.lock.Unlock()
 
+	s.dirty = true
 	delete(s.data, key)
 	return nil
 }
@@ -75,8 +81,17 @@ func (s *MysqlStore) ID() string {
 	return s.sid
 }
 
+var MaxAgeBeforeExpiryRefresh int64 = 30
+
 // Release releases resource and save data to provider.
 func (s *MysqlStore) Release() error {
+	if !s.dirty && s.age < MaxAgeBeforeExpiryRefresh {
+		log.Print("Skipped session update.")
+		return nil
+	} else {
+		log.Print("Did not skip session update.")
+	}
+
 	data, err := session.EncodeGob(s.data)
 	if err != nil {
 		return err
@@ -92,6 +107,7 @@ func (s *MysqlStore) Flush() error {
 	s.lock.Lock()
 	defer s.lock.Unlock()
 
+	s.dirty = true
 	s.data = make(map[interface{}]interface{})
 	return nil
 }
@@ -118,7 +134,9 @@ func (p *MysqlProvider) Init(expire int64, connStr string) (err error) {
 // Read returns raw session store by session ID.
 func (p *MysqlProvider) Read(sid string) (session.RawStore, error) {
 	var data []byte
-	err := p.c.QueryRow("SELECT data FROM session WHERE `key`=?", sid).Scan(&data)
+	var age int64 = 0
+	var dirty bool = false
+	err := p.c.QueryRow("SELECT data, UNIX_TIMESTAMP(NOW()) - expiry FROM session WHERE `key`=?", sid).Scan(&data, &age)
 	if err == sql.ErrNoRows {
 		_, err = p.c.Exec("INSERT INTO session(`key`,data,expiry) VALUES(?,?,?)",
 			sid, "", time.Now().Unix())
@@ -129,6 +147,7 @@ func (p *MysqlProvider) Read(sid string) (session.RawStore, error) {
 
 	var kv map[interface{}]interface{}
 	if len(data) == 0 {
+		dirty = true
 		kv = make(map[interface{}]interface{})
 	} else {
 		kv, err = session.DecodeGob(data)
@@ -137,7 +156,7 @@ func (p *MysqlProvider) Read(sid string) (session.RawStore, error) {
 		}
 	}
 
-	return NewMysqlStore(p.c, sid, kv), nil
+	return NewMysqlStore(p.c, sid, kv, age, dirty), nil
 }
 
 // Exist returns true if session with given ID exists.
