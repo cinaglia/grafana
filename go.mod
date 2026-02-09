@@ -221,7 +221,7 @@ require (
 	google.golang.org/api v0.242.0 // @grafana/grafana-backend-group
 	google.golang.org/grpc v1.78.0 // @grafana/plugins-platform-backend
 	google.golang.org/protobuf v1.36.11 // @grafana/plugins-platform-backend
-	gopkg.in/ini.v1 v1.67.0 // @grafana/alerting-backend
+	gopkg.in/ini.v1 v1.67.1 // @grafana/alerting-backend
 	gopkg.in/mail.v2 v2.3.1 // @grafana/grafana-backend-group
 	k8s.io/api v0.34.3 // @grafana/grafana-app-platform-squad
 	k8s.io/apiextensions-apiserver v0.34.3 // @grafana/grafana-app-platform-squad
